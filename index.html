@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Office P2P Chat</title>
+  <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+  <style>
+    * { box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    body { margin: 0; background-color: #f4f6f8; display: flex; justify-content: center; align-items: center; height: 100vh; }
+    .chat-container { width: 100%; max-width: 600px; height: 90vh; background: #fff; border-radius: 12px; box-shadow: 0 4px 20px rgba(0,0,0,0.1); display: flex; flex-direction: column; overflow: hidden; }
+    .header { background: #1e293b; color: #fff; padding: 16px; font-weight: 600; display: flex; justify-content: space-between; align-items: center; }
+    .status-badge { font-size: 12px; padding: 4px 8px; border-radius: 12px; background: #ef4444; }
+    .status-badge.connected { background: #10b981; }
+    .connection-panel { background: #f8fafc; padding: 12px 16px; border-bottom: 1px solid #e2e8f0; display: flex; gap: 8px; align-items: center; }
+    input[type="text"] { flex: 1; padding: 8px 12px; border: 1px solid #cbd5e1; border-radius: 6px; outline: none; }
+    button { background: #2563eb; color: white; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; font-weight: 500; }
+    button:hover { background: #1d4ed8; }
+    .messages { flex: 1; padding: 16px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
+    .msg { max-width: 75%; padding: 10px 14px; border-radius: 12px; font-size: 14px; line-height: 1.4; word-wrap: break-word; }
+    .msg.incoming { background: #e2e8f0; color: #0f172a; align-self: flex-start; border-bottom-left-radius: 2px; }
+    .msg.outgoing { background: #2563eb; color: #fff; align-self: flex-end; border-bottom-right-radius: 2px; }
+    .msg.system { background: transparent; color: #64748b; font-size: 12px; align-self: center; text-align: center; }
+    .input-panel { padding: 12px 16px; border-top: 1px solid #e2e8f0; display: flex; gap: 8px; }
+  </style>
+</head>
+<body>
+
+<div class="chat-container">
+  <div class="header">
+    <span>Office P2P Chat</span>
+    <span id="status" class="status-badge">Disconnected</span>
+  </div>
+
+  <div class="connection-panel">
+    <div>My ID: <strong id="my-id">Setting up...</strong></div>
+    <button onclick="changeUsername()" style="background:#64748b; font-size:11px; padding:4px 8px; margin-left:auto;">Change Name</button>
+  </div>
+
+  <div class="connection-panel">
+    <input type="text" id="peer-id-input" placeholder="Enter Colleague's Name (e.g. alex)">
+    <button onclick="connectToPeer()">Connect</button>
+  </div>
+
+  <div class="messages" id="messages">
+    <div class="msg system">Enter a colleague's fixed name to connect directly.</div>
+  </div>
+
+  <div class="input-panel">
+    <input type="text" id="message-input" placeholder="Type a message..." disabled onkeypress="handleKeyPress(event)">
+    <button id="send-btn" onclick="sendMessage()" disabled>Send</button>
+  </div>
+</div>
+
+<script>
+  let peer = null;
+  let conn = null;
+
+  function getUserName() {
+    let name = localStorage.getItem('office_chat_username');
+    if (!name) {
+      name = prompt("Enter your name for office chat:") || "user-" + Math.floor(Math.random() * 1000);
+      name = name.toLowerCase().trim().replace(/\s+/g, '-');
+      localStorage.setItem('office_chat_username', name);
+    }
+    return name;
+  }
+
+  function changeUsername() {
+    localStorage.removeItem('office_chat_username');
+    location.reload();
+  }
+
+  function initPeer() {
+    const myName = getUserName();
+    
+    // Prefix to avoid collisions on public PeerJS server
+    const customId = `office-app-${myName}`;
+
+    peer = new Peer(customId);
+
+    peer.on('open', (id) => {
+      document.getElementById('my-id').innerText = myName;
+    });
+
+    peer.on('connection', (incomingConn) => {
+      conn = incomingConn;
+      setupConnectionHandlers();
+    });
+
+    peer.on('error', (err) => {
+      if (err.type === 'unavailable-id') {
+        alert("This username is currently active or taken on the network.");
+      } else {
+        appendSystemMessage(`Error: ${err.type}`);
+      }
+    });
+  }
+
+  function connectToPeer() {
+    let targetName = document.getElementById('peer-id-input').value.trim().toLowerCase().replace(/\s+/g, '-');
+    if (!targetName) return;
+
+    const targetFullId = `office-app-${targetName}`;
+    conn = peer.connect(targetFullId);
+    setupConnectionHandlers();
+  }
+
+  function setupConnectionHandlers() {
+    conn.on('open', () => {
+      updateStatus(true);
+      const peerName = conn.peer.replace('office-app-', '');
+      appendSystemMessage(`Connected to ${peerName}`);
+      toggleInputs(true);
+    });
+
+    conn.on('data', (data) => {
+      appendMessage(data, 'incoming');
+    });
+
+    conn.on('close', () => {
+      updateStatus(false);
+      appendSystemMessage('Peer disconnected.');
+      toggleInputs(false);
+    });
+  }
+
+  function sendMessage() {
+    const input = document.getElementById('message-input');
+    const text = input.value.trim();
+    if (!text || !conn) return;
+
+    conn.send(text);
+    appendMessage(text, 'outgoing');
+    input.value = '';
+  }
+
+  function handleKeyPress(e) {
+    if (e.key === 'Enter') sendMessage();
+  }
+
+  function appendMessage(text, type) {
+    const container = document.getElementById('messages');
+    const msgDiv = document.createElement('div');
+    msgDiv.className = `msg ${type}`;
+    msgDiv.innerText = text;
+    container.appendChild(msgDiv);
+    container.scrollTop = container.scrollHeight;
+  }
+
+  function appendSystemMessage(text) {
+    appendMessage(text, 'system');
+  }
+
+  function updateStatus(isConnected) {
+    const statusBadge = document.getElementById('status');
+    statusBadge.innerText = isConnected ? 'Connected' : 'Disconnected';
+    statusBadge.className = `status-badge ${isConnected ? 'connected' : ''}`;
+  }
+
+  function toggleInputs(enabled) {
+    document.getElementById('message-input').disabled = !enabled;
+    document.getElementById('send-btn').disabled = !enabled;
+  }
+
+  initPeer();
+</script>
+
+</body>
+</html>
