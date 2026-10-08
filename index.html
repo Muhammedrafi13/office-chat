@@ -73,6 +73,7 @@
 
   function closeActiveConnection() {
     if (conn) {
+      console.log("Closing old connection...");
       conn.close();
       conn = null;
     }
@@ -82,31 +83,49 @@
     const myName = getUserName();
     const customId = `office-app-${myName}`;
 
-    peer = new Peer(customId);
+    appendSystemMessage(`Initializing PeerJS with ID: ${customId}`);
+
+    // Adding public Google STUN servers to bypass basic office NAT/firewall restrictions
+    peer = new Peer(customId, {
+      config: {
+        iceServers: [
+          { urls: 'stun:stun.l.google.com:19302' },
+          { urls: 'stun:stun1.l.google.com:19302' }
+        ]
+      },
+      debug: 2 // Enable PeerJS internal warnings in console
+    });
 
     peer.on('open', (id) => {
       document.getElementById('my-id').innerText = myName;
+      appendSystemMessage(`Connected to Peer Server as: ${myName}`);
     });
 
-    // Handle incoming connections cleanly
     peer.on('connection', (incomingConn) => {
+      appendSystemMessage(`Incoming connection request from: ${incomingConn.peer}`);
       closeActiveConnection();
       conn = incomingConn;
       setupConnectionHandlers();
     });
 
     peer.on('error', (err) => {
+      console.error("PeerJS Error:", err);
       if (err.type === 'unavailable-id') {
-        alert("This username is currently active or taken on the network.");
+        alert("This username is already active elsewhere.");
+      } else if (err.type === 'peer-unavailable') {
+        appendSystemMessage(`Error: Peer "${err.message.replace('Could not connect to peer ', '')}" is offline or doesn't exist.`);
       } else {
-        appendSystemMessage(`Error: ${err.type}`);
+        appendSystemMessage(`Peer Error (${err.type}): ${err.message}`);
       }
     });
   }
 
   function connectToPeer() {
     let targetName = document.getElementById('peer-id-input').value.trim().toLowerCase().replace(/\s+/g, '-');
-    if (!targetName) return;
+    if (!targetName) {
+      appendSystemMessage("Please enter a colleague's name first.");
+      return;
+    }
 
     const myName = getUserName();
     if (targetName === myName) {
@@ -114,19 +133,25 @@
       return;
     }
 
-    // Safely close old connection before starting a new one
     closeActiveConnection();
 
     const targetFullId = `office-app-${targetName}`;
-    conn = peer.connect(targetFullId);
+    appendSystemMessage(`Attempting to connect to: ${targetFullId}...`);
+    
+    conn = peer.connect(targetFullId, {
+      reliable: true
+    });
+
     setupConnectionHandlers();
   }
 
   function setupConnectionHandlers() {
+    if (!conn) return;
+
     conn.on('open', () => {
       updateStatus(true);
       const peerName = conn.peer.replace('office-app-', '');
-      appendSystemMessage(`Connected to ${peerName}`);
+      appendSystemMessage(`Connection established with ${peerName}!`);
       toggleInputs(true);
     });
 
@@ -142,7 +167,8 @@
     });
 
     conn.on('error', (err) => {
-      appendSystemMessage(`Connection error: ${err}`);
+      console.error("DataConnection Error:", err);
+      appendSystemMessage(`Data connection error: ${err}`);
       toggleInputs(false);
       conn = null;
     });
