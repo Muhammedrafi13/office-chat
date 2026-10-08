@@ -3,24 +3,27 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Office P2P Chat</title>
+  <title>Office P2P Group Chat</title>
   <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
   <style>
     * { box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
     body { margin: 0; background-color: #f4f6f8; display: flex; justify-content: center; align-items: center; height: 100vh; }
-    .chat-container { width: 100%; max-width: 600px; height: 90vh; background: #fff; border-radius: 12px; box-shadow: 0 4px 20px rgba(0,0,0,0.1); display: flex; flex-direction: column; overflow: hidden; }
+    .chat-container { width: 100%; max-width: 650px; height: 90vh; background: #fff; border-radius: 12px; box-shadow: 0 4px 20px rgba(0,0,0,0.1); display: flex; flex-direction: column; overflow: hidden; }
     .header { background: #1e293b; color: #fff; padding: 16px; font-weight: 600; display: flex; justify-content: space-between; align-items: center; }
     .status-badge { font-size: 12px; padding: 4px 8px; border-radius: 12px; background: #ef4444; }
     .status-badge.connected { background: #10b981; }
-    .connection-panel { background: #f8fafc; padding: 12px 16px; border-bottom: 1px solid #e2e8f0; display: flex; gap: 8px; align-items: center; }
-    input[type="text"] { flex: 1; padding: 8px 12px; border: 1px solid #cbd5e1; border-radius: 6px; outline: none; }
+    .connection-panel { background: #f8fafc; padding: 12px 16px; border-bottom: 1px solid #e2e8f0; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    input[type="text"] { flex: 1; min-width: 150px; padding: 8px 12px; border: 1px solid #cbd5e1; border-radius: 6px; outline: none; }
     button { background: #2563eb; color: white; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; font-weight: 500; }
     button:hover { background: #1d4ed8; }
+    button.secondary { background: #059669; }
+    button.secondary:hover { background: #047857; }
     .messages { flex: 1; padding: 16px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
     .msg { max-width: 75%; padding: 10px 14px; border-radius: 12px; font-size: 14px; line-height: 1.4; word-wrap: break-word; }
     .msg.incoming { background: #e2e8f0; color: #0f172a; align-self: flex-start; border-bottom-left-radius: 2px; }
     .msg.outgoing { background: #2563eb; color: #fff; align-self: flex-end; border-bottom-right-radius: 2px; }
     .msg.system { background: transparent; color: #64748b; font-size: 12px; align-self: center; text-align: center; }
+    .sender-name { font-size: 11px; font-weight: 700; margin-bottom: 2px; opacity: 0.8; }
     .input-panel { padding: 12px 16px; border-top: 1px solid #e2e8f0; display: flex; gap: 8px; }
   </style>
 </head>
@@ -28,22 +31,23 @@
 
 <div class="chat-container">
   <div class="header">
-    <span>Office P2P Chat</span>
+    <span>Office P2P Group Chat</span>
     <span id="status" class="status-badge">Disconnected</span>
   </div>
 
   <div class="connection-panel">
-    <div>My ID: <strong id="my-id">Setting up...</strong></div>
+    <div>My Name: <strong id="my-id">Setting up...</strong></div>
     <button onclick="changeUsername()" style="background:#64748b; font-size:11px; padding:4px 8px; margin-left:auto;">Change Name</button>
   </div>
 
   <div class="connection-panel">
-    <input type="text" id="peer-id-input" placeholder="Enter Colleague's Name (e.g. alex)">
-    <button onclick="connectToPeer()">Connect</button>
+    <input type="text" id="target-input" placeholder="Enter Room Name or Colleague Name">
+    <button onclick="connectToTarget()">Join / Connect</button>
+    <button class="secondary" onclick="createGroupRoom()">Create Group Room</button>
   </div>
 
   <div class="messages" id="messages">
-    <div class="msg system">Enter a colleague's fixed name to connect directly.</div>
+    <div class="msg system">Click "Create Group Room" or enter a Room/Colleague Name to join.</div>
   </div>
 
   <div class="input-panel">
@@ -54,7 +58,14 @@
 
 <script>
   let peer = null;
-  let conn = null;
+  let myName = '';
+  let isHost = false;
+  
+  // For Clients: single connection to the host
+  let hostConn = null;
+  
+  // For Host: map of active client connections { peerId: DataConnection }
+  let groupClients = {};
 
   function getUserName() {
     let name = localStorage.getItem('office_chat_username');
@@ -71,116 +82,155 @@
     location.reload();
   }
 
-  function closeActiveConnection() {
-    if (conn) {
-      console.log("Closing old connection...");
-      conn.close();
-      conn = null;
-    }
-  }
+  function initPeer(customRoomId = null) {
+    myName = getUserName();
+    const peerId = customRoomId || `office-app-${myName}`;
 
-  function initPeer() {
-    const myName = getUserName();
-    const customId = `office-app-${myName}`;
+    if (peer) peer.destroy();
 
-    appendSystemMessage(`Initializing PeerJS with ID: ${customId}`);
-
-    // Adding public Google STUN servers to bypass basic office NAT/firewall restrictions
-    peer = new Peer(customId, {
+    peer = new Peer(peerId, {
       config: {
         iceServers: [
           { urls: 'stun:stun.l.google.com:19302' },
           { urls: 'stun:stun1.l.google.com:19302' }
         ]
-      },
-      debug: 2 // Enable PeerJS internal warnings in console
+      }
     });
 
     peer.on('open', (id) => {
       document.getElementById('my-id').innerText = myName;
-      appendSystemMessage(`Connected to Peer Server as: ${myName}`);
+      if (isHost) {
+        const roomCode = id.replace('office-room-', '');
+        appendSystemMessage(`Group Room Created! Share room name: "${roomCode}" with colleagues.`);
+        updateStatus(true, `Hosting Room (${roomCode})`);
+        toggleInputs(true);
+      } else {
+        appendSystemMessage(`Connected as: ${myName}`);
+      }
     });
 
+    // Listen for incoming peer connections (when acting as Host or Direct Peer)
     peer.on('connection', (incomingConn) => {
-      appendSystemMessage(`Incoming connection request from: ${incomingConn.peer}`);
-      closeActiveConnection();
-      conn = incomingConn;
-      setupConnectionHandlers();
+      setupIncomingConnection(incomingConn);
     });
 
     peer.on('error', (err) => {
-      console.error("PeerJS Error:", err);
       if (err.type === 'unavailable-id') {
-        alert("This username is already active elsewhere.");
-      } else if (err.type === 'peer-unavailable') {
-        appendSystemMessage(`Error: Peer "${err.message.replace('Could not connect to peer ', '')}" is offline or doesn't exist.`);
+        alert("This Room Name or Username is already active.");
       } else {
-        appendSystemMessage(`Peer Error (${err.type}): ${err.message}`);
+        appendSystemMessage(`Error: ${err.type}`);
       }
     });
   }
 
-  function connectToPeer() {
-    let targetName = document.getElementById('peer-id-input').value.trim().toLowerCase().replace(/\s+/g, '-');
-    if (!targetName) {
-      appendSystemMessage("Please enter a colleague's name first.");
-      return;
-    }
+  // Create a dedicated multi-user Group Room as the Host
+  function createGroupRoom() {
+    const roomInput = prompt("Enter a Group Room Name (e.g. lunch-squad):");
+    if (!roomInput) return;
 
-    const myName = getUserName();
-    if (targetName === myName) {
-      alert("You cannot connect to yourself!");
-      return;
-    }
+    const roomCode = roomInput.toLowerCase().trim().replace(/\s+/g, '-');
+    isHost = true;
+    groupClients = {};
 
-    closeActiveConnection();
-
-    const targetFullId = `office-app-${targetName}`;
-    appendSystemMessage(`Attempting to connect to: ${targetFullId}...`);
-    
-    conn = peer.connect(targetFullId, {
-      reliable: true
-    });
-
-    setupConnectionHandlers();
+    initPeer(`office-room-${roomCode}`);
   }
 
-  function setupConnectionHandlers() {
-    if (!conn) return;
+  // Connect to a Group Room or another Direct Peer
+  function connectToTarget() {
+    const input = document.getElementById('target-input').value.trim().toLowerCase().replace(/\s+/g, '-');
+    if (!input) return;
 
-    conn.on('open', () => {
-      updateStatus(true);
-      const peerName = conn.peer.replace('office-app-', '');
-      appendSystemMessage(`Connection established with ${peerName}!`);
+    isHost = false;
+
+    // First try connecting to a room, fallback to direct peer format
+    let targetFullId = input.startsWith('office-') ? input : `office-room-${input}`;
+    
+    appendSystemMessage(`Attempting to join group room "${input}"...`);
+
+    hostConn = peer.connect(targetFullId, { reliable: true });
+
+    hostConn.on('open', () => {
+      updateStatus(true, `Connected to ${input}`);
+      appendSystemMessage(`Successfully joined group room: ${input}`);
       toggleInputs(true);
     });
 
-    conn.on('data', (data) => {
-      appendMessage(data, 'incoming');
+    hostConn.on('data', (payload) => {
+      appendMessage(payload.sender, payload.text, 'incoming');
+    });
+
+    hostConn.on('close', () => {
+      updateStatus(false);
+      appendSystemMessage('Disconnected from group room.');
+      toggleInputs(false);
+    });
+
+    hostConn.on('error', (err) => {
+      appendSystemMessage(`Failed to join room: ${err}`);
+      toggleInputs(false);
+    });
+  }
+
+  // Host handles new client connections and message broadcasting
+  function setupIncomingConnection(conn) {
+    conn.on('open', () => {
+      if (isHost) {
+        groupClients[conn.peer] = conn;
+        appendSystemMessage(`A colleague joined the room.`);
+      } else {
+        hostConn = conn;
+        updateStatus(true);
+        toggleInputs(true);
+      }
+    });
+
+    conn.on('data', (payload) => {
+      // Display incoming message locally
+      appendMessage(payload.sender, payload.text, 'incoming');
+
+      // If Host, broadcast this message to all OTHER connected room members
+      if (isHost) {
+        broadcastMessage(payload, conn.peer);
+      }
     });
 
     conn.on('close', () => {
-      updateStatus(false);
-      appendSystemMessage('Peer disconnected.');
-      toggleInputs(false);
-      conn = null;
+      if (isHost) {
+        delete groupClients[conn.peer];
+        appendSystemMessage(`A colleague left the room.`);
+      } else {
+        updateStatus(false);
+        toggleInputs(false);
+      }
     });
+  }
 
-    conn.on('error', (err) => {
-      console.error("DataConnection Error:", err);
-      appendSystemMessage(`Data connection error: ${err}`);
-      toggleInputs(false);
-      conn = null;
+  // Broadcast payload to all connected clients except sender
+  function broadcastMessage(payload, excludePeerId = null) {
+    Object.keys(groupClients).forEach((peerId) => {
+      if (peerId !== excludePeerId && groupClients[peerId].open) {
+        groupClients[peerId].send(payload);
+      }
     });
   }
 
   function sendMessage() {
     const input = document.getElementById('message-input');
     const text = input.value.trim();
-    if (!text || !conn) return;
+    if (!text) return;
 
-    conn.send(text);
-    appendMessage(text, 'outgoing');
+    const payload = { sender: myName, text: text };
+
+    if (isHost) {
+      // Host sends to everyone in the group
+      broadcastMessage(payload);
+      appendMessage('You (Host)', text, 'outgoing');
+    } else if (hostConn && hostConn.open) {
+      // Client sends to Host, who then broadcasts it
+      hostConn.send(payload);
+      appendMessage('You', text, 'outgoing');
+    }
+
     input.value = '';
   }
 
@@ -188,22 +238,38 @@
     if (e.key === 'Enter') sendMessage();
   }
 
-  function appendMessage(text, type) {
+  function appendMessage(sender, text, type) {
     const container = document.getElementById('messages');
     const msgDiv = document.createElement('div');
     msgDiv.className = `msg ${type}`;
-    msgDiv.innerText = text;
+    
+    if (type === 'incoming') {
+      const senderDiv = document.createElement('div');
+      senderDiv.className = 'sender-name';
+      senderDiv.innerText = sender;
+      msgDiv.appendChild(senderDiv);
+    }
+
+    const textDiv = document.createElement('div');
+    textDiv.innerText = text;
+    msgDiv.appendChild(textDiv);
+
     container.appendChild(msgDiv);
     container.scrollTop = container.scrollHeight;
   }
 
   function appendSystemMessage(text) {
-    appendMessage(text, 'system');
+    const container = document.getElementById('messages');
+    const msgDiv = document.createElement('div');
+    msgDiv.className = 'msg system';
+    msgDiv.innerText = text;
+    container.appendChild(msgDiv);
+    container.scrollTop = container.scrollHeight;
   }
 
-  function updateStatus(isConnected) {
+  function updateStatus(isConnected, text = null) {
     const statusBadge = document.getElementById('status');
-    statusBadge.innerText = isConnected ? 'Connected' : 'Disconnected';
+    statusBadge.innerText = isConnected ? (text || 'Connected') : 'Disconnected';
     statusBadge.className = `status-badge ${isConnected ? 'connected' : ''}`;
   }
 
