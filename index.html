@@ -71,10 +71,15 @@
     location.reload();
   }
 
+  function closeActiveConnection() {
+    if (conn) {
+      conn.close();
+      conn = null;
+    }
+  }
+
   function initPeer() {
     const myName = getUserName();
-    
-    // Prefix to avoid collisions on public PeerJS server
     const customId = `office-app-${myName}`;
 
     peer = new Peer(customId);
@@ -83,7 +88,9 @@
       document.getElementById('my-id').innerText = myName;
     });
 
+    // Handle incoming connections cleanly
     peer.on('connection', (incomingConn) => {
+      closeActiveConnection();
       conn = incomingConn;
       setupConnectionHandlers();
     });
@@ -100,6 +107,15 @@
   function connectToPeer() {
     let targetName = document.getElementById('peer-id-input').value.trim().toLowerCase().replace(/\s+/g, '-');
     if (!targetName) return;
+
+    const myName = getUserName();
+    if (targetName === myName) {
+      alert("You cannot connect to yourself!");
+      return;
+    }
+
+    // Safely close old connection before starting a new one
+    closeActiveConnection();
 
     const targetFullId = `office-app-${targetName}`;
     conn = peer.connect(targetFullId);
@@ -122,6 +138,13 @@
       updateStatus(false);
       appendSystemMessage('Peer disconnected.');
       toggleInputs(false);
+      conn = null;
+    });
+
+    conn.on('error', (err) => {
+      appendSystemMessage(`Connection error: ${err}`);
+      toggleInputs(false);
+      conn = null;
     });
   }
 
